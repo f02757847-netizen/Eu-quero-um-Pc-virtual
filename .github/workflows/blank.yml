@@ -1,0 +1,288 @@
+name: PC criado pelo @alves7.pcm [v2]
+
+on:
+  workflow_dispatch:
+    inputs:
+      instance_number:
+        description: 'Número da Instância (1-10)'
+        required: true
+        default: '1'
+        type: string
+      auto_shutdown_minutes:
+        description: 'Auto-desligar após X minutos (0 = desativado)'
+        required: true
+        default: '0'
+        type: string
+      install_extras:
+        description: 'Instalar apps extras (VSCode, Python, Node)?'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  deploy-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      
+    # ==========================================================
+    #  BANNER DE ABERTURA
+    # ==========================================================
+    - name: Banner - PC criado pelo @alves7.pcm
+      run: |
+        Write-Host ""
+        Write-Host "  █████╗ ██╗    ██╗   ██╗███████╗███████╗███████╗" -ForegroundColor Magenta
+        Write-Host " ██╔══██╗██║    ██║   ██║██╔════╝██╔════╝██╔════╝" -ForegroundColor Magenta
+        Write-Host " ███████║██║    ██║   ██║█████╗  ███████╗███████╗" -ForegroundColor Magenta
+        Write-Host " ██╔══██║██║    ╚██╗ ██╔╝██╔══╝  ╚════██║╚════██║" -ForegroundColor Magenta
+        Write-Host " ██║  ██║███████╗╚████╔╝ ███████╗███████║███████║" -ForegroundColor Magenta
+        Write-Host " ╚═╝  ╚═╝╚══════╝ ╚═══╝  ╚══════╝╚══════╝╚══════╝" -ForegroundColor Magenta
+        Write-Host ""
+        Write-Host "        🖥️  PC CRIADO PELO @alves7.pcm  🖥️" -ForegroundColor Cyan
+        Write-Host "        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+        Write-Host ""
+        
+    - name: System Information
+      run: |
+        Write-Host "=== INFORMAÇÕES DO SISTEMA ===" -ForegroundColor Cyan
+        Write-Host "Instância nº: ${{ github.event.inputs.instance_number }}" -ForegroundColor Yellow
+        Write-Host "Runner: $env:RUNNER_NAME" -ForegroundColor Yellow
+        Write-Host "Workflow: $env:GITHUB_WORKFLOW" -ForegroundColor Yellow
+        Write-Host "Run ID: ${{ github.run_id }}" -ForegroundColor Yellow
+        Write-Host "Repositório: ${{ github.repository }}" -ForegroundColor Yellow
+        Write-Host "Iniciado por: ${{ github.actor }}" -ForegroundColor Yellow
+        
+        Write-Host "`n=== ESPECIFICAÇÕES HARDWARE ===" -ForegroundColor Cyan
+        Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, TotalPhysicalMemory, CsProcessors
+        Get-WmiObject -Class Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
+        Get-PSDrive C | Select-Object Used, Free
+        
+    # ==========================================================
+    #  CONFIGURAR RDP
+    # ==========================================================
+    - name: Enable RDP
+      run: |
+        Write-Host "🔓 Habilitando Remote Desktop..." -ForegroundColor Green
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "MaxInstanceCount" -Value 10
+        Write-Host "✅ RDP habilitado!" -ForegroundColor Green
+        
+    - name: Create User Account
+      run: |
+        Write-Host "👤 Criando conta de usuário..." -ForegroundColor Green
+        $Password = ConvertTo-SecureString "Alves7@PC!" -AsPlainText -Force
+        Set-LocalUser -Name "runneradmin" -Password $Password
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin"
+        
+        # Garantir que o usuário tem privilégios de administrador
+        Add-LocalGroupMember -Group "Administrators" -Member "runneradmin" -ErrorAction SilentlyContinue
+        
+        Write-Host "✅ Conta criada!" -ForegroundColor Green
+        Write-Host "   Usuário: runneradmin" -ForegroundColor Yellow
+        Write-Host "   Senha:   Alves7@PC!" -ForegroundColor Yellow
+        
+    # ==========================================================
+    #  TAILSCALE (REDE PRIVADA)
+    # ==========================================================
+    - name: Install Tailscale
+      run: |
+        Write-Host "📦 Baixando Tailscale..." -ForegroundColor Green
+        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+        $installerPath = "$env:TEMP\tailscale.msi"
+        Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+        Write-Host "⚙️ Instalando Tailscale silenciosamente..." -ForegroundColor Green
+        Start-Process msiexec.exe -ArgumentList "/i `"$installerPath`" /quiet /norestart" -Wait
+        Remove-Item $installerPath -Force
+        Write-Host "✅ Tailscale instalado!" -ForegroundColor Green
+        
+    - name: Start Tailscale
+      run: |
+        Write-Host "🌐 Iniciando Tailscale..." -ForegroundColor Green
+        $hostname = "alves7-pc-${{ github.event.inputs.instance_number }}-${{ github.run_id }}"
+        & "C:\Program Files\Tailscale\tailscale.exe" up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname $hostname --accept-routes
+        Start-Sleep -Seconds 15
+        
+        $tsStatus = & "C:\Program Files\Tailscale\tailscale.exe" status
+        Write-Host $tsStatus -ForegroundColor Cyan
+        
+    - name: Get Tailscale IP
+      run: |
+        $tsIP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+        Write-Host "✅ IP Tailscale: $tsIP" -ForegroundColor Green
+        echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+        
+    # ==========================================================
+    #  APLICATIVOS ESSENCIAIS
+    # ==========================================================
+    - name: Install Google Chrome
+      run: |
+        Write-Host "🌐 Baixando Google Chrome..." -ForegroundColor Green
+        $chromeUrl = "https://dl.google.com/chrome/install/latest/chrome_installer.exe"
+        $installerPath = "$env:TEMP\chrome_installer.exe"
+        Invoke-WebRequest -Uri $chromeUrl -OutFile $installerPath
+        Write-Host "⚙️ Instalando Chrome silenciosamente..." -ForegroundColor Green
+        Start-Process -FilePath $installerPath -ArgumentList "/silent /install" -Wait
+        Remove-Item $installerPath -Force
+        Write-Host "✅ Google Chrome instalado!" -ForegroundColor Green
+        
+    - name: Install 7-Zip
+      run: |
+        Write-Host "📦 Baixando 7-Zip..." -ForegroundColor Green
+        $zipUrl = "https://www.7-zip.org/a/7z2409-x64.exe"
+        $installerPath = "$env:TEMP\7z-installer.exe"
+        Invoke-WebRequest -Uri $zipUrl -OutFile $installerPath
+        Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
+        Remove-Item $installerPath -Force
+        Write-Host "✅ 7-Zip instalado!" -ForegroundColor Green
+        
+    # ==========================================================
+    #  APLICATIVOS EXTRAS (opcional)
+    # ==========================================================
+    - name: Install Visual Studio Code
+      if: ${{ github.event.inputs.install_extras == 'true' }}
+      run: |
+        Write-Host "💻 Baixando VS Code..." -ForegroundColor Green
+        $vscodeUrl = "https://code.visualstudio.com/sha/download?build=stable&os=win32-x64-user"
+        $installerPath = "$env:TEMP\vscode-installer.exe"
+        Invoke-WebRequest -Uri $vscodeUrl -OutFile $installerPath
+        Start-Process -FilePath $installerPath -ArgumentList "/VERYSILENT /MERGETASKS=!runcode,addcontextmenufiles,addcontextmenufolders,associatewithfiles,addtopath" -Wait
+        Remove-Item $installerPath -Force
+        Write-Host "✅ VS Code instalado!" -ForegroundColor Green
+        
+    - name: Install Python 3.12
+      if: ${{ github.event.inputs.install_extras == 'true' }}
+      run: |
+        Write-Host "🐍 Baixando Python 3.12..." -ForegroundColor Green
+        $pythonUrl = "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe"
+        $installerPath = "$env:TEMP\python-installer.exe"
+        Invoke-WebRequest -Uri $pythonUrl -OutFile $installerPath
+        Start-Process -FilePath $installerPath -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 Include_test=0" -Wait
+        Remove-Item $installerPath -Force
+        Write-Host "✅ Python instalado!" -ForegroundColor Green
+        
+    - name: Install Node.js LTS
+      if: ${{ github.event.inputs.install_extras == 'true' }}
+      run: |
+        Write-Host "📗 Baixando Node.js LTS..." -ForegroundColor Green
+        $nodeUrl = "https://nodejs.org/dist/v20.18.0/node-v20.18.0-x64.msi"
+        $installerPath = "$env:TEMP\node-installer.msi"
+        Invoke-WebRequest -Uri $nodeUrl -OutFile $installerPath
+        Start-Process msiexec.exe -ArgumentList "/i `"$installerPath`" /quiet /norestart" -Wait
+        Remove-Item $installerPath -Force
+        Write-Host "✅ Node.js instalado!" -ForegroundColor Green
+        
+    - name: Install Git
+      if: ${{ github.event.inputs.install_extras == 'true' }}
+      run: |
+        Write-Host "🔧 Baixando Git..." -ForegroundColor Green
+        $gitUrl = "https://github.com/git-for-windows/git/releases/download/v2.47.0.windows.1/Git-2.47.0-64-bit.exe"
+        $installerPath = "$env:TEMP\git-installer.exe"
+        Invoke-WebRequest -Uri $gitUrl -OutFile $installerPath
+        Start-Process -FilePath $installerPath -ArgumentList "/VERYSILENT /NORESTART" -Wait
+        Remove-Item $installerPath -Force
+        Write-Host "✅ Git instalado!" -ForegroundColor Green
+        
+    # ==========================================================
+    #  AUTO-SHUTDOWN (opcional)
+    # ==========================================================
+    - name: Configure Auto Shutdown
+      if: ${{ github.event.inputs.auto_shutdown_minutes != '0' }}
+      run: |
+        $minutes = [int]"${{ github.event.inputs.auto_shutdown_minutes }}"
+        Write-Host "⏰ Auto-desligamento configurado para $minutes minutos" -ForegroundColor Yellow
+        # Agenda desligamento do runner
+        Start-Process -FilePath "shutdown.exe" -ArgumentList "/s /t $($minutes * 60) /c `"PC criado pelo @alves7.pcm sera desligado`"" -NoNewWindow
+        Write-Host "✅ Agendamento ativo!" -ForegroundColor Green
+        
+    # ==========================================================
+    #  DETALHES DE CONEXÃO
+    # ==========================================================
+    - name: Connection Details
+      run: |
+        Write-Host ""
+        Write-Host "  ╔══════════════════════════════════════════════════════╗" -ForegroundColor Magenta
+        Write-Host "  ║                                                      ║" -ForegroundColor Magenta
+        Write-Host "  ║          🖥️  PC CRIADO PELO @alves7.pcm  🖥️          ║" -ForegroundColor Cyan
+        Write-Host "  ║                                                      ║" -ForegroundColor Magenta
+        Write-Host "  ╠══════════════════════════════════════════════════════╣" -ForegroundColor Magenta
+        Write-Host "  ║                                                      ║" -ForegroundColor Magenta
+        Write-Host "  ║  🌐 HOST (Tailscale IP):                             ║" -ForegroundColor Cyan
+        Write-Host "  ║     $env:TAILSCALE_IP" -ForegroundColor White
+        Write-Host "  ║                                                      ║" -ForegroundColor Magenta
+        Write-Host "  ║  👤 USUÁRIO: runneradmin                             ║" -ForegroundColor Cyan
+        Write-Host "  ║  🔑 SENHA:   Alves7@PC!                              ║" -ForegroundColor Cyan
+        Write-Host "  ║                                                      ║" -ForegroundColor Magenta
+        Write-Host "  ║  🎯 INSTÂNCIA: ${{ github.event.inputs.instance_number }}                                                  ║" -ForegroundColor Cyan
+        Write-Host "  ║  ⏱️  DURAÇÃO:  6 horas                                ║" -ForegroundColor Cyan
+        Write-Host "  ║                                                      ║" -ForegroundColor Magenta
+        Write-Host "  ╚══════════════════════════════════════════════════════╝" -ForegroundColor Magenta
+        Write-Host ""
+        
+        Write-Host "📋 INSTRUÇÕES DE CONEXÃO:" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  1️⃣  Instale o Tailscale no seu dispositivo:" -ForegroundColor White
+        Write-Host "      → https://tailscale.com/download" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  2️⃣  Faça login com a MESMA conta Tailscale do secret" -ForegroundColor White
+        Write-Host ""
+        Write-Host "  3️⃣  Abra o app 'Remote Desktop' (Windows/Mac/iOS/Android)" -ForegroundColor White
+        Write-Host ""
+        Write-Host "  4️⃣  Digite o IP: $env:TAILSCALE_IP" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  5️⃣  Entre com: runneradmin / Alves7@PC!" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  ⚠️  NÃO FECHE ESTA JANELA DO ACTIONS!" -ForegroundColor Red
+        Write-Host ""
+        
+    # ==========================================================
+    #  MANTER SESSÃO VIVA (HEARTBEAT)
+    # ==========================================================
+    - name: Keep Session Alive
+      run: |
+        Write-Host "`n╔════════════════════════════════════════════════╗" -ForegroundColor Green
+        Write-Host "║  ✅ SESSÃO ATIVA - PC @alves7.pcm RODANDO!     ║" -ForegroundColor Green
+        Write-Host "╚════════════════════════════════════════════════╝" -ForegroundColor Green
+        
+        $counter = 0
+        $startTime = Get-Date
+        
+        while ($true) {
+          $counter++
+          $uptime = (Get-Date) - $startTime
+          $uptimeStr = "{0:hh\:mm\:ss}" -f $uptime
+          
+          Write-Host ""
+          Write-Host "💓 Heartbeat #$counter | Uptime: $uptimeStr | $(Get-Date -Format 'HH:mm:ss')" -ForegroundColor Cyan
+          
+          # Verificar Tailscale
+          try {
+            $tsStatus = & "C:\Program Files\Tailscale\tailscale.exe" status 2>&1
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "   🌐 Tailscale: ATIVO ✅" -ForegroundColor Green
+            } else {
+              Write-Host "   🌐 Tailscale: RECONECTANDO..." -ForegroundColor Yellow
+              & "C:\Program Files\Tailscale\tailscale.exe" up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname "alves7-pc-${{ github.event.inputs.instance_number }}-${{ github.run_id }}"
+            }
+          } catch {
+            Write-Host "   🌐 Tailscale: ERRO - Tentando reconectar..." -ForegroundColor Red
+          }
+          
+          # Verificar espaço em disco
+          $disk = Get-PSDrive C
+          $freeGB = [math]::Round($disk.Free / 1GB, 2)
+          Write-Host "   💾 Disco livre: $freeGB GB" -ForegroundColor Yellow
+          
+          # Verificar RDP
+          $rdpStatus = Get-Service -Name "TermService" | Select-Object -ExpandProperty Status
+          Write-Host "   🖥️  RDP Service: $rdpStatus" -ForegroundColor Green
+          
+          Start-Sleep -Seconds 60
+        }
